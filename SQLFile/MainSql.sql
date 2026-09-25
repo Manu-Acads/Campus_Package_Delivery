@@ -2336,3 +2336,236 @@
 --     r.route_id,
 --     users_with_packages DESC,
 --     distance_m;
+
+-----------------------------------------------
+-- SPATIAL QUERIES
+--------------------------------------------
+
+-- SELECT
+--     p.package_id,
+--     p.delivery_person_id,
+--     p.assigned_at,
+--     pdl.delivered_at,
+--     pdl.delivered_at - p.assigned_at AS delivery_time
+-- FROM packages p
+-- JOIN package_delivery_log pdl
+--     ON p.package_id = pdl.package_id
+-- WHERE pdl.delivered_at IS NOT NULL
+-- ORDER BY delivery_time DESC;
+
+-------------------------------------
+-- SELECT
+--     delivery_person_id,
+--     status,
+--     start_time,
+--     end_time,
+--     end_time - start_time AS status_duration
+-- FROM delivery_person_status
+-- ORDER BY delivery_person_id, start_time;
+
+-----------------------------------------------
+-- SELECT
+--     dp.delivery_person_id,
+--     dp.name,
+--     COUNT(p.package_id) AS delivered_packages,
+
+--     ROUND(
+--         AVG(
+--             EXTRACT(
+--                 EPOCH FROM
+--                 (pdl.delivered_at - p.assigned_at)
+--             )
+--         ) / 60,
+--         2
+--     ) AS avg_delivery_time_minutes,
+
+--     ROUND(
+--         MIN(
+--             EXTRACT(
+--                 EPOCH FROM
+--                 (pdl.delivered_at - p.assigned_at)
+--             )
+--         ) / 60,
+--         2
+--     ) AS fastest_delivery_minutes,
+
+--     ROUND(
+--         MAX(
+--             EXTRACT(
+--                 EPOCH FROM
+--                 (pdl.delivered_at - p.assigned_at)
+--             )
+--         ) / 60,
+--         2
+--     ) AS slowest_delivery_minutes
+
+-- FROM delivery_persons dp
+
+-- JOIN packages p
+--     ON dp.delivery_person_id = p.delivery_person_id
+
+-- JOIN package_delivery_log pdl
+--     ON p.package_id = pdl.package_id
+
+-- WHERE pdl.delivered_at IS NOT NULL
+
+-- GROUP BY
+--     dp.delivery_person_id,
+--     dp.name
+
+-- ORDER BY
+--     avg_delivery_time_minutes;
+
+----------------------------------------------------------------------------
+-- SELECT
+--     dp.delivery_person_id,
+--     dp.name,
+
+--     COUNT(p.package_id) AS delivered_packages,
+
+--     ROUND(
+--         AVG(
+--             EXTRACT(
+--                 EPOCH FROM
+--                 (pdl.delivered_at - p.assigned_at)
+--             )
+--         ) / 60,
+--         2
+--     ) AS avg_delivery_time_minutes,
+
+--     ROUND(
+--         AVG(
+--             ST_Distance(
+--                 gps.position::geography,
+--                 l.geometry::geography
+--             )
+--         )::numeric,
+--         2
+--     ) AS avg_distance_to_destination_meters
+
+-- FROM delivery_persons dp
+
+-- JOIN packages p
+--     ON dp.delivery_person_id = p.delivery_person_id
+
+-- JOIN package_delivery_log pdl
+--     ON p.package_id = pdl.package_id
+
+-- JOIN landmarks l
+--     ON pdl.landmark_id = l.landmark_id
+
+-- JOIN LATERAL (
+--     SELECT position
+--     FROM delivery_person_gps
+--     WHERE delivery_person_id = dp.delivery_person_id
+--     ORDER BY recorded_at DESC
+--     LIMIT 1
+-- ) gps ON TRUE
+
+-- WHERE pdl.delivered_at IS NOT NULL
+
+-- GROUP BY
+--     dp.delivery_person_id,
+--     dp.name
+
+-- ORDER BY avg_delivery_time_minutes;
+
+
+-----------------------------------------------------------------------------
+-- Given a delivery person's current location and slot demand, which
+-- predefined route/landmark sequence allows them to serve the greatest
+-- expected demand?
+
+-----------------------------------------------------------------------------
+-- WITH latest_location AS (
+--     -- Current location of each delivery person
+--     SELECT DISTINCT ON (delivery_person_id)
+--         delivery_person_id,
+--         position
+--     FROM delivery_person_gps
+--     ORDER BY delivery_person_id, recorded_at DESC
+-- ),
+
+-- route_distance AS (
+--     -- Distance from current location to every predefined route
+--     SELECT
+--         ll.delivery_person_id,
+--         r.route_id,
+--         r.route_name,
+--         ST_Distance(
+--             ll.position::geography,
+--             r.geometry::geography
+--         ) AS distance_to_route_m
+--     FROM latest_location ll
+--     CROSS JOIN routes r
+-- ),
+
+-- route_landmarks AS (
+--     -- Find landmarks within 150 m of each route
+--     SELECT
+--         rd.delivery_person_id,
+--         rd.route_id,
+--         rd.route_name,
+--         rd.distance_to_route_m,
+--         l.landmark_id,
+--         l.landmark_name
+--     FROM route_distance rd
+--     JOIN landmarks l
+--         ON ST_DWithin(
+--             l.geometry::geography,
+--             (
+--                 SELECT geometry
+--                 FROM routes
+--                 WHERE route_id = rd.route_id
+--             )::geography,
+--             150
+--         )
+-- ),
+
+-- landmark_demand AS (
+--     -- Count user preferences at landmarks
+--     SELECT
+--         rl.delivery_person_id,
+--         rl.route_id,
+--         rl.route_name,
+--         rl.distance_to_route_m,
+--         rl.landmark_id,
+--         rl.landmark_name,
+--         COUNT(DISTINCT up.user_id) AS demand
+--     FROM route_landmarks rl
+--     LEFT JOIN user_preferences up
+--         ON up.landmark_id = rl.landmark_id
+--     GROUP BY
+--         rl.delivery_person_id,
+--         rl.route_id,
+--         rl.route_name,
+--         rl.distance_to_route_m,
+--         rl.landmark_id,
+--         rl.landmark_name
+-- )
+
+-- SELECT
+--     delivery_person_id,
+--     route_id,
+--     route_name,
+
+--     ROUND(
+--         distance_to_route_m::numeric,
+--         2
+--     ) AS distance_from_current_location_m,
+
+--     COUNT(DISTINCT landmark_id) AS demand_landmarks,
+
+--     SUM(demand) AS expected_demand
+
+-- FROM landmark_demand
+
+-- GROUP BY
+--     delivery_person_id,
+--     route_id,
+--     route_name,
+--     distance_to_route_m
+
+-- ORDER BY
+--     delivery_person_id,
+--     expected_demand DESC;
